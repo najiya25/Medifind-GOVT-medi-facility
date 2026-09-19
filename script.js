@@ -692,3 +692,108 @@ function initFacilitiesMap(){
   if(bounds.length)facilitiesMap.fitBounds(L.latLngBounds(bounds).pad(0.12));
   setTimeout(()=>facilitiesMap.invalidateSize(),50);
 }
+
+
+/* ===== Map + Distance Reliability Upgrade ===== */
+function stockMarkerStatus(f){
+  const s=stockStatus(f);
+  return s==='in'?'in':s==='low'?'low':'out';
+}
+function stockMarkerIcon(status){
+  const label=status==='in'?'In Stock':status==='low'?'Limited Stock':'Out of Stock';
+  return L.divIcon({
+    className:'medifind-stock-marker-wrap',
+    html:`<span class="medifind-stock-marker ${status}" title="${label}"></span>`,
+    iconSize:[22,22], iconAnchor:[11,11], popupAnchor:[0,-12]
+  });
+}
+function mapLegendHtml(){
+  return `<div class="map-stock-legend"><span><i class="legend-dot in"></i>${t('inStockLabel')}</span><span><i class="legend-dot low"></i>${t('lowLabel')}</span><span><i class="legend-dot out"></i>${t('outLabel')}</span></div>`;
+}
+function ensureMapLegend(mapEl){
+  if(!mapEl) return;
+  let legend=mapEl.parentElement?.querySelector('.map-stock-legend');
+  if(!legend){
+    legend=document.createElement('div');
+    legend.className='map-stock-legend';
+    mapEl.insertAdjacentElement('afterend',legend);
+  }
+  legend.outerHTML=mapLegendHtml();
+}
+
+function updateMainMap(items){
+  if(!mainMap || typeof L==='undefined') return;
+  mapMarkers.forEach(m=>{try{mainMap.removeLayer(m)}catch(e){}}); mapMarkers=[];
+  if(locationMarker){try{mainMap.removeLayer(locationMarker)}catch(e){}}
+  if(userLocation){
+    locationMarker=L.circleMarker([userLocation.lat,userLocation.lng],{radius:8,weight:3,fillOpacity:.9,color:'#183b56',fillColor:'#5ba7d8'}).addTo(mainMap)
+      .bindPopup(`<b>${t('locateMe')}</b><br>${userLocation.lat.toFixed(5)}, ${userLocation.lng.toFixed(5)}`);
+  }
+  const bounds=[];
+  if(userLocation) bounds.push([userLocation.lat,userLocation.lng]);
+  items.forEach(f=>{
+    const lf=localizedFacility(f);
+    const status=stockMarkerStatus(f);
+    const marker=L.marker([f.lat,f.lng],{icon:stockMarkerIcon(status)}).addTo(mainMap)
+      .bindPopup(`<b>${escapeHtml(lf.name)}</b><br>${escapeHtml(lf.address)}<br><b>${status==='in'?t('inStockLabel'):status==='low'?t('lowFilter'):t('depleted')}</b><br>${f.distanceKm!=null?`${t('distance')}: ${f.distanceKm.toFixed(1)} km<br>`:`${t('distanceUnavailable')}<br>`}<a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${f.lat},${f.lng}">${t('directions')}</a>`);
+    mapMarkers.push(marker); bounds.push([f.lat,f.lng]);
+  });
+  if(bounds.length) mainMap.fitBounds(L.latLngBounds(bounds).pad(.12));
+  ensureMapLegend(document.getElementById('liveMap'));
+}
+
+function initFacilitiesMap(){
+  const el=document.getElementById('facilitiesMap'); if(!el || typeof L==='undefined') return;
+  if(!facilitiesMap){
+    facilitiesMap=L.map(el,{scrollWheelZoom:false}).setView([9.985,76.297],13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(facilitiesMap);
+  }
+  facilitiesMap.eachLayer(layer=>{
+    if(layer instanceof L.Marker) facilitiesMap.removeLayer(layer);
+  });
+  const bounds=[];
+  facilities.forEach(f=>{
+    const lf=localizedFacility(f), status=stockMarkerStatus(f);
+    const marker=L.marker([f.lat,f.lng],{icon:stockMarkerIcon(status)}).addTo(facilitiesMap)
+      .bindPopup(`<b>${escapeHtml(lf.name)}</b><br>${escapeHtml(lf.address)}<br>${escapeHtml(lf.hours)}<br><b>${status==='in'?t('inStockLabel'):status==='low'?t('lowFilter'):t('depleted')}</b><br>${distanceFor(f)!=null?`${t('distance')}: ${distanceFor(f).toFixed(1)} km<br>`:`${t('distanceUnavailable')}<br>`}<a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${f.lat},${f.lng}">${t('directions')}</a>`);
+    bounds.push([f.lat,f.lng]);
+  });
+  if(userLocation) bounds.push([userLocation.lat,userLocation.lng]);
+  if(userLocation){
+    L.circleMarker([userLocation.lat,userLocation.lng],{radius:8,weight:3,fillOpacity:.9,color:'#183b56',fillColor:'#5ba7d8'}).addTo(facilitiesMap).bindPopup(`<b>${t('locateMe')}</b>`);
+  }
+  if(bounds.length) facilitiesMap.fitBounds(L.latLngBounds(bounds).pad(.12));
+  ensureMapLegend(el);
+  setTimeout(()=>facilitiesMap.invalidateSize(),100);
+}
+
+function requestLiveLocation(){
+  if(!window.isSecureContext && location.hostname!=='localhost' && location.hostname!=='127.0.0.1'){
+    showLocationMessage('denied');
+    return;
+  }
+  if(!navigator.geolocation){showLocationMessage('denied');return;}
+  const btn=document.getElementById('locateBtn'); if(btn) btn.textContent=t('locating');
+  navigator.geolocation.getCurrentPosition(pos=>{
+    userLocation={lat:pos.coords.latitude,lng:pos.coords.longitude};
+    localStorage.setItem('medifindLastLocation',JSON.stringify(userLocation));
+    if(btn) btn.textContent=t('locationReady');
+    initFacilities();
+    if(document.getElementById('results') && !document.getElementById('results').classList.contains('hidden')) renderSearchCards();
+    if(document.getElementById('liveMap')){initMainMap(); updateMainMap(currentSearchQuery?facilities.map((f,i)=>{const c={...f};const s=statusForFacility(f,i,profileFor(currentSearchQuery));c.inStock=s==='in'?1:0;c.low=s==='low'?1:0;c.out=s==='out'?1:0;c.stock=s==='in'?100:s==='low'?45:0;c.distanceKm=distanceFor(c);return c;}):facilities.map(f=>({...f,distanceKm:distanceFor(f)})));}
+    if(document.getElementById('facilitiesMap')) initFacilitiesMap();
+  },()=>{
+    if(btn) btn.textContent=t('locateMe');
+    showLocationMessage('denied');
+  },{enableHighAccuracy:true,timeout:20000,maximumAge:30000});
+}
+
+function init(){
+  loadSavedLocation();
+  const select=document.getElementById('language');
+  if(select){select.value=currentLanguage;select.addEventListener('change',e=>applyLanguage(e.target.value));}
+  initFacilities();initEquiv();initAudit();setupSearchListener();setupLocationButton();applyLanguage(currentLanguage);
+  if(document.getElementById('liveMap')) initMainMap();
+  if(document.getElementById('facilitiesMap')) initFacilitiesMap();
+  if(!userLocation) setTimeout(()=>requestLiveLocation(),700);
+}
